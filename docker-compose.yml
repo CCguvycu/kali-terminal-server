@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  kali-terminal:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      - KALI_TOKEN=changeme
+      - PORT=8765
+    restart: unless-stopped
