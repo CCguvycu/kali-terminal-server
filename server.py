@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
 """
-Kali Terminal Server v5
-- IP logging, live session view, keyword alerts
+Kali Terminal Server v6
+- All data operations go through the REST API (api_client.py)
+- No direct database access — single source of truth via the API
 - PTY mode on Linux / pipe fallback on Windows
-- PostgreSQL via pg8000, aiohttp HTTP+WS
 """
 import asyncio, json, os, sys, socket, shutil, uuid, secrets, time, hmac, hashlib
 from datetime import datetime
 from aiohttp import web
 import aiohttp
-
-try:
-    import pg8000.native as pg8k
-    HAS_PG = True
-except ImportError:
-    pg8k = None; HAS_PG = False
+import api_client as api
 
 TOKEN          = os.environ.get("KALI_TOKEN",      "kali2024")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "changeme")
 PORT           = int(os.environ.get("PORT", 8765))
-DB             = os.environ.get("DATABASE_URL")
 
 # ── Auth state ────────────────────────────────────────────────────────────────
 COOKIE_NAME    = "kt_auth"
@@ -46,7 +40,6 @@ ALERT_KEYWORDS = [
     ":(){:|:&};:",
 ]
 
-db_ok    = False
 mem_history: dict = {}
 mem_stats:   dict = {}
 active_ws:   dict = {}
@@ -99,130 +92,14 @@ async def auth_middleware(request, handler):
         raise web.HTTPFound("/login")
     return await handler(request)
 
-# ── DB ─────────────────────────────────────────────────────────────────────────
+# ── API-backed helpers (replaces direct DB calls) ─────────────────────────────
 
-def _conn():
-    import urllib.parse as up
-    u = up.urlparse(DB)
-    return pg8k.Connection(host=u.hostname, port=u.port or 5432,
-        database=u.path.lstrip("/"), user=u.username,
-        password=u.password, ssl_context=True)
-
-async def init_db():
-    global db_ok
-    if not DB or not HAS_PG:
-        print("  [!] No DB — memory only", flush=True); return
+async def init_api():
     try:
-        def _f():
-            c = _conn()
-            c.run("SELECT 1")
-            # Migrate: add ip_address to sessions
-            try: c.run("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip_address TEXT")
-            except Exception: pass
-            # Migrate: alerts table
-            c.run("""
-                CREATE TABLE IF NOT EXISTS alerts (
-                    id           SERIAL PRIMARY KEY,
-                    session_id   TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
-                    command      TEXT,
-                    keyword      TEXT,
-                    triggered_at TIMESTAMPTZ DEFAULT NOW(),
-                    acknowledged BOOLEAN DEFAULT FALSE
-                )
-            """)
-            c.close()
-        await asyncio.to_thread(_f)
-        db_ok = True
-        print("  [+] PostgreSQL connected", flush=True)
+        await api._get_token()
+        print("  [+] REST API connected", flush=True)
     except Exception as e:
-        print(f"  [!] DB error: {e}", flush=True)
-
-async def db_start(sid, shell, ip):
-    if not db_ok: return
-    def _f():
-        c = _conn()
-        c.run("INSERT INTO sessions(session_id,shell,ip_address) VALUES(:s,:h,:i) ON CONFLICT DO NOTHING",
-              s=sid, h=shell, i=ip)
-        c.close()
-    try: await asyncio.to_thread(_f)
-    except Exception: pass
-
-async def db_end(sid, count):
-    if not db_ok: return
-    def _f():
-        c = _conn()
-        c.run("UPDATE sessions SET disconnected_at=NOW(),command_count=:n WHERE session_id=:s", n=count, s=sid)
-        c.close()
-    try: await asyncio.to_thread(_f)
-    except Exception: pass
-
-async def db_cmd(sid, cmd):
-    if not db_ok: return
-    def _f():
-        c = _conn()
-        c.run("INSERT INTO commands(session_id,command) VALUES(:s,:c)", s=sid, c=cmd)
-        c.run("UPDATE sessions SET command_count=command_count+1 WHERE session_id=:s", s=sid)
-        c.close()
-    try: await asyncio.to_thread(_f)
-    except Exception: pass
-
-async def db_alert(sid, cmd, keyword):
-    if not db_ok: return
-    def _f():
-        c = _conn()
-        c.run("INSERT INTO alerts(session_id,command,keyword) VALUES(:s,:c,:k)", s=sid, c=cmd, k=keyword)
-        c.close()
-    try: await asyncio.to_thread(_f)
-    except Exception: pass
-
-async def db_hist(sid):
-    if not db_ok: return []
-    def _f():
-        c = _conn()
-        rows = c.run("SELECT command,executed_at FROM commands WHERE session_id=:s ORDER BY executed_at DESC LIMIT 100", s=sid)
-        c.close()
-        return [{"cmd": r[0], "ts": r[1].isoformat()} for r in rows]
-    try: return await asyncio.to_thread(_f)
-    except Exception: return []
-
-def db_dashboard_data():
-    if not db_ok:
-        return {"stats":{"total_sessions":0,"active_sessions":0,"total_commands":0,"sessions_today":0,"alerts":0},
-                "sessions":[],"commands":[],"alerts":[]}
-    c = _conn()
-    try:
-        s = c.run("""SELECT
-            (SELECT COUNT(*) FROM sessions),
-            (SELECT COUNT(*) FROM sessions WHERE disconnected_at IS NULL),
-            (SELECT COUNT(*) FROM commands),
-            (SELECT COUNT(*) FROM sessions WHERE connected_at > NOW()-INTERVAL '24 hours'),
-            (SELECT COUNT(*) FROM alerts WHERE acknowledged=FALSE)
-        """)[0]
-        stats = {"total_sessions":int(s[0]),"active_sessions":int(s[1]),
-                 "total_commands":int(s[2]),"sessions_today":int(s[3]),"alerts":int(s[4])}
-
-        sess = [{"session_id":r[0],
-                 "connected_at":r[1].isoformat() if r[1] else None,
-                 "disconnected_at":r[2].isoformat() if r[2] else None,
-                 "command_count":r[3],"shell":r[4],"ip":r[5]}
-                for r in c.run("SELECT session_id,connected_at,disconnected_at,command_count,shell,ip_address FROM sessions ORDER BY connected_at DESC LIMIT 50")]
-
-        cmds = [{"command":r[0],"executed_at":r[1].isoformat() if r[1] else None,"session_id":r[2]}
-                for r in c.run("SELECT command,executed_at,session_id FROM commands ORDER BY executed_at DESC LIMIT 100")]
-
-        alerts = [{"id":r[0],"session_id":r[1],"command":r[2],"keyword":r[3],
-                   "triggered_at":r[4].isoformat() if r[4] else None}
-                  for r in c.run("SELECT id,session_id,command,keyword,triggered_at FROM alerts WHERE acknowledged=FALSE ORDER BY triggered_at DESC LIMIT 50")]
-
-        return {"stats":stats,"sessions":sess,"commands":cmds,"alerts":alerts}
-    finally: c.close()
-
-async def db_ack_alerts():
-    if not db_ok: return
-    def _f():
-        c = _conn(); c.run("UPDATE alerts SET acknowledged=TRUE"); c.close()
-    try: await asyncio.to_thread(_f)
-    except Exception: pass
+        print(f"  [!] API error: {e}", flush=True)
 
 # ── PTY helpers ────────────────────────────────────────────────────────────────
 
@@ -263,10 +140,10 @@ async def track(sid, text):
             if cmd:
                 mem_history[sid].append({"cmd":cmd,"ts":datetime.now().isoformat()})
                 mem_stats[sid]["command_count"] += 1
-                await db_cmd(sid, cmd)
+                await api.log_command(sid, cmd)
                 kw = check_keywords(cmd)
                 if kw:
-                    await db_alert(sid, cmd, kw)
+                    await api.log_alert(sid, cmd, kw)
                     # Notify all watchers with a red banner
                     banner = f"\r\n\x1b[41;97m ⚠ ALERT: matched keyword [{kw}] \x1b[0m\r\n"
                     await broadcast(sid, banner)
@@ -295,7 +172,7 @@ async def ws_handler(request):
     active_ws[sid]   = ws
     watchers[sid]    = []
 
-    await db_start(sid, " ".join(shell), ip)
+    await api.start_session(sid, " ".join(shell), ip)
     await ws.send_json({"type":"session","session_id":sid,"pty":USE_PTY})
 
     try:
@@ -307,7 +184,7 @@ async def ws_handler(request):
         for w in list(watchers.pop(sid, [])):
             try: await w.close()
             except Exception: pass
-        await db_end(sid, mem_stats.get(sid,{}).get("command_count",0))
+        await api.end_session(sid, mem_stats.get(sid,{}).get("command_count",0))
         mem_history.pop(sid, None)
         mem_stats.pop(sid, None)
 
@@ -345,7 +222,7 @@ async def _pty_session(ws, sid, shell):
                 try:
                     obj = json.loads(data); t = obj.get("type","")
                     if t=="resize": resize_pty(master,int(obj["rows"]),int(obj["cols"])); continue
-                    if t=="history": await ws.send_json({"type":"history","history":await db_hist(sid) or mem_history.get(sid,[])}); continue
+                    if t=="history": await ws.send_json({"type":"history","history":await api.get_history(sid) or mem_history.get(sid,[])}); continue
                     if t=="stats": st=mem_stats.get(sid,{}); await ws.send_json({"type":"stats","command_count":st.get("command_count",0),"session_id":sid}); continue
                 except Exception: pass
             try: await track(sid,data); os.write(master,data.encode())
@@ -413,7 +290,7 @@ async def route_dashboard(request):
 
 async def route_api(request):
     try:
-        data = await asyncio.to_thread(db_dashboard_data)
+        data = await api.get_dashboard_data()
         return web.Response(text=json.dumps(data), content_type="application/json",
                             headers={"Access-Control-Allow-Origin":"*"})
     except Exception as e:
@@ -429,7 +306,7 @@ async def route_kill(request):
                         headers={"Access-Control-Allow-Origin":"*"})
 
 async def route_ack_alerts(request):
-    await db_ack_alerts()
+    await api._call("post", "/api/v1/alerts/ack")
     return web.Response(text=json.dumps({"ok":True}), content_type="application/json",
                         headers={"Access-Control-Allow-Origin":"*"})
 
@@ -760,7 +637,7 @@ button:hover{opacity:.9}
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 async def main():
-    await init_db()
+    await init_api()
     mode = "PTY" if USE_PTY else "pipe"
     ip   = get_server_ip()
     print(f"\n  Kali Terminal Server v5 [{mode} mode]", flush=True)
