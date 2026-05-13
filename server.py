@@ -9,11 +9,14 @@ import asyncio, json, os, sys, socket, shutil, uuid, secrets, time, hmac, hashli
 from datetime import datetime
 from aiohttp import web
 import aiohttp
+from jose import jwt as jose_jwt, JWTError
 import api_client as api
 
 TOKEN          = os.environ.get("KALI_TOKEN",      "kali2024")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "changeme")
 PORT           = int(os.environ.get("PORT", 8765))
+JWT_SECRET     = os.environ.get("JWT_SECRET",     "change-this-secret-in-production")
+JWT_ALGO       = "HS256"
 
 # ── Auth state ────────────────────────────────────────────────────────────────
 COOKIE_NAME    = "kt_auth"
@@ -82,15 +85,39 @@ def check_rate_limit(ip: str) -> bool:
 _PUBLIC = {"/login", "/ws", "/ws/", "/terminal", "/download"}
 
 @web.middleware
+async def cors_middleware(request, handler):
+    if request.method == "OPTIONS":
+        return web.Response(headers={
+            "Access-Control-Allow-Origin":  "*",
+            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        })
+    response = await handler(request)
+    response.headers.setdefault("Access-Control-Allow-Origin",  "*")
+    response.headers.setdefault("Access-Control-Allow-Headers", "Authorization, Content-Type")
+    return response
+
+def _bearer_valid(request) -> bool:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    try:
+        jose_jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGO])
+        return True
+    except JWTError:
+        return False
+
+@web.middleware
 async def auth_middleware(request, handler):
     path = request.path
     if path in _PUBLIC or path.startswith("/api/watch/"):
         return await handler(request)
-    if not check_session(request):
-        if path.startswith("/api/"):
-            return web.Response(status=401, text="Unauthorized")
-        raise web.HTTPFound("/login")
-    return await handler(request)
+    if _bearer_valid(request) or check_session(request):
+        return await handler(request)
+    if path.startswith("/api/"):
+        return web.Response(status=401, text="Unauthorized",
+                            headers={"Access-Control-Allow-Origin": "*"})
+    raise web.HTTPFound("/login")
 
 # ── API-backed helpers (replaces direct DB calls) ─────────────────────────────
 
@@ -746,7 +773,7 @@ async def main():
     print(f"  Dashboard: http://{ip}:{PORT}/", flush=True)
     print(f"  Token:     {TOKEN}\n", flush=True)
 
-    app = web.Application(middlewares=[auth_middleware])
+    app = web.Application(middlewares=[cors_middleware, auth_middleware])
     app.router.add_get("/",                  route_dashboard)
     app.router.add_get("/login",             route_login_get)
     app.router.add_post("/login",            route_login_post)
