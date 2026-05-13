@@ -79,7 +79,7 @@ def check_rate_limit(ip: str) -> bool:
     return True
 
 # Routes that skip auth (terminal WS + login)
-_PUBLIC = {"/login", "/ws", "/ws/", "/terminal"}
+_PUBLIC = {"/login", "/ws", "/ws/", "/terminal", "/download"}
 
 @web.middleware
 async def auth_middleware(request, handler):
@@ -634,6 +634,106 @@ button:hover{opacity:.9}
 </body>
 </html>"""
 
+# ── Download landing page ─────────────────────────────────────────────────────
+
+APK_URL = "https://github.com/CCguvycu/kali-terminal-android/releases/download/v1.1/kali-terminal-v1.1.apk"
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kali Terminal — Android App</title>
+<style>
+:root{--bg:#0a0e17;--bg2:#0f1521;--bg3:#161d2e;--green:#00ff41;--cyan:#00d4ff;--dim:#3a4a5a;--dim2:#6a7a8a;--fg:#c8d8e8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;min-height:100vh;display:flex;flex-direction:column;align-items:center}
+body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);pointer-events:none;z-index:0}
+.wrap{position:relative;z-index:1;width:100%;max-width:680px;padding:40px 24px 60px}
+
+/* header */
+.logo{font-size:11px;color:var(--dim2);letter-spacing:3px;text-transform:uppercase;margin-bottom:48px;text-align:center}
+.logo span{color:var(--green)}
+
+/* hero */
+.icon-wrap{width:96px;height:96px;border-radius:22px;background:var(--bg3);border:1px solid var(--dim);display:flex;align-items:center;justify-content:center;margin:0 auto 24px;box-shadow:0 0 40px #00ff4118}
+.icon-svg{width:60px;height:60px}
+h1{font-size:28px;color:#fff;text-align:center;letter-spacing:1px;margin-bottom:10px}
+h1 em{color:var(--green);font-style:normal}
+.tagline{text-align:center;color:var(--dim2);font-size:13px;line-height:1.6;margin-bottom:36px}
+
+/* download button */
+.dl-btn{display:block;width:100%;padding:18px;background:var(--green);color:#000;text-decoration:none;text-align:center;font-family:'Courier New',monospace;font-size:15px;font-weight:bold;letter-spacing:2px;border-radius:6px;box-shadow:0 0 24px #00ff4133;transition:opacity .15s,box-shadow .15s;margin-bottom:12px}
+.dl-btn:hover{opacity:.92;box-shadow:0 0 36px #00ff4155}
+.dl-note{text-align:center;color:var(--dim2);font-size:11px;margin-bottom:40px}
+.dl-note a{color:var(--dim2);text-decoration:underline}
+
+/* features */
+.features{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:40px}
+@media(max-width:480px){.features{grid-template-columns:1fr}}
+.feat{background:var(--bg2);border:1px solid var(--dim);border-radius:6px;padding:16px 14px}
+.feat .ico{color:var(--green);font-size:18px;margin-bottom:6px}
+.feat h3{color:var(--fg);font-size:12px;margin-bottom:4px;letter-spacing:.5px}
+.feat p{color:var(--dim2);font-size:11px;line-height:1.5}
+
+/* how it works */
+.steps{background:var(--bg2);border:1px solid var(--dim);border-radius:6px;padding:20px;margin-bottom:40px}
+.steps h2{color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
+.step{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}
+.step:last-child{margin-bottom:0}
+.step-n{color:var(--green);font-size:12px;font-weight:bold;min-width:20px;padding-top:1px}
+.step-t{color:var(--fg);font-size:12px;line-height:1.5}
+.step-t small{color:var(--dim2);display:block;font-size:11px}
+
+/* footer */
+footer{color:var(--dim2);font-size:10px;text-align:center;border-top:1px solid var(--dim);padding-top:20px}
+footer a{color:var(--dim2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">KALI<span>TERMINAL</span></div>
+
+  <div class="icon-wrap">
+    <svg class="icon-svg" viewBox="0 0 108 108" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M18 30L48 54L18 78L30 78L42 54L30 30Z" fill="#00ff41"/>
+      <path d="M54 66H88V76H54Z" fill="#00ff41"/>
+    </svg>
+  </div>
+
+  <h1>Kali <em>Terminal</em></h1>
+  <p class="tagline">A full Linux terminal on Android.<br>No storage. No root. Just connect and go.</p>
+
+  <a class="dl-btn" href="{APK_URL}" download>&#x25BC; &nbsp; Download APK &nbsp; (v1.1)</a>
+  <p class="dl-note">185 KB &nbsp;·&nbsp; Android 5.0+ &nbsp;·&nbsp; Enable "Install unknown apps" in settings &nbsp;·&nbsp;
+    <a href="https://github.com/CCguvycu/kali-terminal-android">Source on GitHub</a></p>
+
+  <div class="features">
+    <div class="feat"><div class="ico">&#x26A1;</div><h3>Zero Storage</h3><p>The Linux environment runs on a remote server — nothing installed on your phone.</p></div>
+    <div class="feat"><div class="ico">&#x1F5A5;</div><h3>Full Terminal</h3><p>Real xterm emulation with colours, cursor, tab completion, and resize support.</p></div>
+    <div class="feat"><div class="ico">&#x1F4DC;</div><h3>History Panel</h3><p>Tap the keyboard icon to browse every command run in your session.</p></div>
+    <div class="feat"><div class="ico">&#x1F512;</div><h3>Token Auth</h3><p>Your server, your token. No account required, no data shared with third parties.</p></div>
+  </div>
+
+  <div class="steps">
+    <h2>How to install</h2>
+    <div class="step"><span class="step-n">1</span><span class="step-t">Download the APK above and open it on your Android device.<small>You may need to allow installs from unknown sources in Settings → Security.</small></span></div>
+    <div class="step"><span class="step-n">2</span><span class="step-t">Enter your server URL and token on the connect screen.<small>Default: wss://kali-terminal-production.up.railway.app &nbsp;·&nbsp; Token: kali2024</small></span></div>
+    <div class="step"><span class="step-n">3</span><span class="step-t">Tap Connect — you now have a live Linux terminal.</span></div>
+  </div>
+
+  <footer>
+    MIT License &nbsp;·&nbsp;
+    <a href="https://github.com/CCguvycu/kali-terminal-android">Android app</a> &nbsp;·&nbsp;
+    <a href="https://github.com/CCguvycu/kali-terminal-server">Server</a>
+  </footer>
+</div>
+</body>
+</html>""".replace("{APK_URL}", APK_URL)
+
+async def route_download(request):
+    return web.Response(text=LANDING_HTML, content_type="text/html")
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -655,6 +755,7 @@ async def main():
     app.router.add_post("/api/kill/{sid}",   route_kill)
     app.router.add_post("/api/alerts/ack",   route_ack_alerts)
     app.router.add_get("/api/watch/{sid}",   route_watch)
+    app.router.add_get("/download",           route_download)
     app.router.add_get("/ws",                ws_handler)
     app.router.add_get("/ws/",               ws_handler)
     app.router.add_get("/terminal",          ws_handler)
